@@ -78,8 +78,8 @@ def _build_gemini_hash_map() -> dict[str, str]:
                 if entry.is_dir() and not entry.name.startswith("."):
                     h = hashlib.sha256(str(entry).encode()).hexdigest()
                     result[h] = str(entry)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning("Failed to scan directory %s: %s", root, e)
 
     return result
 
@@ -93,7 +93,11 @@ def _extract_project_path_from_sessions(project_hash: str) -> str | None:
     for session_file in sorted(chats_dir.glob("session-*.json"), reverse=True):
         try:
             data = json.loads(session_file.read_text())
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError as e:
+            logger.warning("Failed to parse JSON in %s: %s", session_file, e)
+            continue
+        except OSError as e:
+            logger.warning("Failed to read %s: %s", session_file, e)
             continue
 
         has_tool_calls = False
@@ -149,7 +153,8 @@ def _iter_jsonl(filepath: Path):
                 continue
             try:
                 yield json.loads(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.warning("Skipping malformed JSON line in %s: %s", filepath, e)
                 continue
 
 
@@ -292,7 +297,8 @@ def _load_kimi_work_dirs() -> dict[str, str]:
             for entry in work_dirs
             if entry.get("path")
         }
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to load Kimi config %s: %s", KIMI_CONFIG_PATH, e)
         return {}
 
 
@@ -373,8 +379,8 @@ def _discover_custom_projects() -> list[dict]:
             total_size += f.stat().st_size
             try:
                 session_count += sum(1 for line in f.open() if line.strip())
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning("Failed to read %s: %s", f, e)
         if session_count == 0:
             continue
         projects.append(
@@ -664,7 +670,8 @@ def _parse_opencode_session(
                         cache_write = _safe_int(cache.get("write")) if isinstance(cache, dict) else 0
                         stats["input_tokens"] += _safe_int(tokens.get("input")) + cache_read + cache_write
                         stats["output_tokens"] += _safe_int(tokens.get("output"))
-    except (sqlite3.Error, OSError):
+    except (sqlite3.Error, OSError) as e:
+        logger.warning("Failed to parse OpenCode session %s: %s", session_id, e)
         return None
 
     if metadata["model"] is None:
@@ -744,7 +751,8 @@ def _parse_claude_session_file(
 
     try:
         entries = list(_iter_jsonl(filepath))
-    except OSError:
+    except OSError as e:
+        logger.warning("Failed to read session file %s: %s", filepath, e)
         return None
 
     tool_result_map = _build_tool_result_map(entries, anonymizer)
@@ -949,7 +957,11 @@ def _parse_gemini_session_file(
     try:
         with open(filepath) as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except json.JSONDecodeError as e:
+        logger.warning("Failed to parse JSON in %s: %s", filepath, e)
+        return None
+    except OSError as e:
+        logger.warning("Failed to read %s: %s", filepath, e)
         return None
 
     messages = []
@@ -1035,7 +1047,8 @@ def _parse_openclaw_session_file(
     """Parse an OpenClaw session JSONL file into a structured conversation."""
     try:
         entries = list(_iter_jsonl(filepath))
-    except OSError:
+    except OSError as e:
+        logger.warning("Failed to read OpenClaw session file %s: %s", filepath, e)
         return None
 
     if not entries:
@@ -1324,7 +1337,8 @@ def _parse_codex_session_file(
 
     try:
         entries = list(_iter_jsonl(filepath))
-    except OSError:
+    except OSError as e:
+        logger.warning("Failed to read Codex session file %s: %s", filepath, e)
         return None
 
     state.tool_result_map = _build_codex_tool_result_map(entries, anonymizer)
@@ -1541,7 +1555,8 @@ def _parse_codex_tool_arguments(arguments: Any) -> Any:
     if isinstance(arguments, str):
         try:
             parsed = json.loads(arguments)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            logger.warning("Failed to parse tool arguments as JSON: %s", e)
             return arguments
         return parsed
     return arguments
@@ -1567,7 +1582,8 @@ def _load_json_field(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            logger.warning("Failed to parse JSON field: %s", e)
             return {}
         if isinstance(parsed, dict):
             return parsed
@@ -1686,7 +1702,8 @@ def _extract_codex_cwd(session_file: Path) -> str | None:
                 cwd = entry.get("payload", {}).get("cwd")
                 if isinstance(cwd, str) and cwd.strip():
                     return cwd
-    except OSError:
+    except OSError as e:
+        logger.warning("Failed to read Codex session file %s: %s", session_file, e)
         return None
     return None
 
@@ -1785,7 +1802,8 @@ def _parse_kimi_session_file(
                             args_str = func.get("arguments", "")
                             try:
                                 args = json.loads(args_str) if isinstance(args_str, str) else args_str
-                            except json.JSONDecodeError:
+                            except json.JSONDecodeError as e:
+                                logger.warning("Failed to parse Kimi tool arguments for %s: %s", tool_name, e)
                                 args = args_str
                             tool_uses.append({
                                 "tool": tool_name,
@@ -1805,7 +1823,8 @@ def _parse_kimi_session_file(
                 if isinstance(token_count, int):
                     stats["output_tokens"] = max(stats["output_tokens"], token_count)
 
-    except OSError:
+    except OSError as e:
+        logger.warning("Failed to read Kimi session file %s: %s", filepath, e)
         return None
 
     return _make_session_result(metadata, messages, stats)
@@ -1821,7 +1840,8 @@ def _build_opencode_project_index() -> dict[str, list[str]]:
             rows = conn.execute(
                 "SELECT id, directory FROM session ORDER BY time_updated DESC, id DESC"
             ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as e:
+        logger.warning("Failed to query OpenCode database %s: %s", OPENCODE_DB_PATH, e)
         return {}
 
     for session_id, cwd in rows:
@@ -1853,8 +1873,8 @@ def _build_openclaw_project_index() -> dict[str, list[Path]]:
             for session_file in sorted(sessions_dir.glob("*.jsonl")):
                 cwd = _extract_openclaw_cwd(session_file) or UNKNOWN_OPENCLAW_CWD
                 index.setdefault(cwd, []).append(session_file)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.warning("Failed to scan OpenClaw agents directory %s: %s", OPENCLAW_AGENTS_DIR, e)
     return index
 
 
@@ -1871,8 +1891,10 @@ def _extract_openclaw_cwd(session_file: Path) -> str | None:
             cwd = header.get("cwd")
             if isinstance(cwd, str) and cwd.strip():
                 return cwd
-    except (json.JSONDecodeError, OSError):
-        pass
+    except json.JSONDecodeError as e:
+        logger.warning("Failed to parse JSON in %s: %s", session_file, e)
+    except OSError as e:
+        logger.warning("Failed to read %s: %s", session_file, e)
     return None
 
 
