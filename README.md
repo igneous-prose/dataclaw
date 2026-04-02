@@ -140,32 +140,29 @@ Step 2 (INSTALL SKILL) is omitted in manual usage.
 
 ## What gets exported
 
-| Data | Included | Notes |
-|------|----------|-------|
-| User messages | Yes | Full text (including voice transcripts) |
-| Assistant responses | Yes | Full text output |
-| Extended thinking | Yes | Claude's reasoning (opt out with `--no-thinking`) |
-| Tool calls | Yes | Tool name + inputs + outputs |
-| Token usage | Yes | Input/output tokens per session |
-| Model & metadata | Yes | Model name, git branch, timestamps |
+- User messages - Including voice transcripts and images
+- Assistant responses
+- Assistant thinking - Opt out with `--no-thinking`
+- Tool calls - Tool name, inputs, outputs
+- Token usage - Input/output tokens per session
+- Metadata - Model name, git branch, timestamps
 
 ### Privacy & Redaction
 
 DataClaw applies multiple layers of protection:
 
-1. **Path anonymization** - File paths stripped to project-relative
-2. **Username hashing** - Your macOS username + any configured usernames replaced with stable hashes
-3. **Secret detection** - Regex patterns catch JWT tokens, API keys (Anthropic, OpenAI, HF, GitHub, AWS, etc.), database passwords, private keys, Discord webhooks, and more
-4. **Entropy analysis** - Long high-entropy strings in quotes are flagged as potential secrets
-5. **Email redaction** - Personal email addresses removed
-6. **Custom redaction** - You can configure additional strings and usernames to redact
-7. **Tool call redaction** - Secrets in tool inputs and outputs are redacted
+1. Username redaction - Your OS username + any configured usernames replaced with stable hashes
+2. Secret redaction - Regex patterns catch JWT tokens, API keys (Anthropic, OpenAI, HF, GitHub, AWS, etc.), database passwords, private keys, Discord webhooks, and more
+3. Entropy analysis - Long high-entropy strings in quotes are flagged as potential secrets
+4. Email redaction - Regex pattern catches email addresses
+5. Custom redaction - You can configure additional strings to redact
+6. Tool call redaction - Tool inputs and outputs are redacted with the same standard as regular messages
 
 **This is NOT foolproof.** Always review your exported data before publishing.
 Automated redaction cannot catch everything - especially service-specific
 identifiers, third-party PII, or secrets in unusual formats.
 
-We recommend to convert the exported jsonl into yaml using the script in https://github.com/peteromallet/dataclaw/issues/1 ,
+We recommend to convert the exported jsonl into human-readable yaml using the script in https://github.com/peteromallet/dataclaw/issues/1 ,
 then use tools such as [trufflehog](https://github.com/trufflesecurity/trufflehog) and [gitleaks](https://github.com/gitleaks/gitleaks) to scan it.
 
 To help improve redaction, report issues: https://github.com/banodoco/dataclaw/issues
