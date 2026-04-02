@@ -14,6 +14,28 @@ from ..secrets import redact_session
 from .common import HF_TAG, REPO_URL, SKILL_URL, _format_token_count, _provider_dataset_tags
 
 
+def _token_totals(stats: object) -> tuple[int, int]:
+    if not isinstance(stats, dict):
+        return 0, 0
+    return stats.get("input_tokens", 0), stats.get("output_tokens", 0)
+
+
+def _add_breakdown_row(
+    breakdown: dict[str, dict[str, int]],
+    key: object,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+) -> None:
+    if not isinstance(key, str) or not key.strip():
+        return
+
+    row = breakdown.setdefault(key, {"sessions": 0, "input_tokens": 0, "output_tokens": 0})
+    row["sessions"] += 1
+    row["input_tokens"] += input_tokens
+    row["output_tokens"] += output_tokens
+
+
 def _gemini_dedupe_fingerprint(session: dict, source: str) -> str | None:
     if source != "gemini":
         return None
@@ -38,6 +60,8 @@ def export_to_jsonl(
     skipped = 0
     total_redactions = 0
     models: dict[str, int] = {}
+    model_breakdown: dict[str, dict[str, int]] = {}
+    project_breakdown: dict[str, dict[str, int]] = {}
     total_input_tokens = 0
     total_output_tokens = 0
     project_names = []
@@ -81,9 +105,21 @@ def export_to_jsonl(
                 total += 1
                 proj_count += 1
                 models[model] = models.get(model, 0) + 1
-                stats = session.get("stats", {})
-                total_input_tokens += stats.get("input_tokens", 0)
-                total_output_tokens += stats.get("output_tokens", 0)
+                input_tokens, output_tokens = _token_totals(session.get("stats", {}))
+                total_input_tokens += input_tokens
+                total_output_tokens += output_tokens
+                _add_breakdown_row(
+                    model_breakdown,
+                    model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+                _add_breakdown_row(
+                    project_breakdown,
+                    session.get("project") or project["display_name"],
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
             if proj_count:
                 project_names.append(project["display_name"])
             print(f" {proj_count} sessions")
@@ -93,7 +129,9 @@ def export_to_jsonl(
         "skipped": skipped,
         "redactions": total_redactions,
         "models": models,
+        "model_breakdown": model_breakdown,
         "projects": project_names,
+        "project_breakdown": project_breakdown,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
         "exported_at": datetime.now(tz=timezone.utc).isoformat(),
@@ -102,7 +140,9 @@ def export_to_jsonl(
 
 def summarize_export_jsonl(jsonl_path: Path) -> dict:
     models: dict[str, int] = {}
+    model_breakdown: dict[str, dict[str, int]] = {}
     project_names: list[str] = []
+    project_breakdown: dict[str, dict[str, int]] = {}
     seen_projects: set[str] = set()
     total = 0
     total_input_tokens = 0
@@ -125,19 +165,91 @@ def summarize_export_jsonl(jsonl_path: Path) -> dict:
                 seen_projects.add(project)
                 project_names.append(project)
 
-            stats = row.get("stats", {})
-            if isinstance(stats, dict):
-                total_input_tokens += stats.get("input_tokens", 0)
-                total_output_tokens += stats.get("output_tokens", 0)
+            input_tokens, output_tokens = _token_totals(row.get("stats", {}))
+            total_input_tokens += input_tokens
+            total_output_tokens += output_tokens
+            _add_breakdown_row(
+                model_breakdown,
+                model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+            _add_breakdown_row(
+                project_breakdown,
+                project,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
 
     return {
         "sessions": total,
         "models": models,
+        "model_breakdown": model_breakdown,
         "projects": project_names,
+        "project_breakdown": project_breakdown,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
         "exported_at": datetime.now(tz=timezone.utc).isoformat(),
     }
+
+
+def _fallback_breakdown(counts: object, names: object) -> dict[str, dict[str, int]]:
+    breakdown: dict[str, dict[str, int]] = {}
+
+    if isinstance(counts, dict):
+        for name, sessions in counts.items():
+            if isinstance(name, str) and name.strip():
+                breakdown[name] = {
+                    "sessions": sessions if isinstance(sessions, int) else 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                }
+        return breakdown
+
+    if isinstance(names, list):
+        for name in names:
+            if isinstance(name, str) and name.strip():
+                breakdown[name] = {"sessions": 0, "input_tokens": 0, "output_tokens": 0}
+
+    return breakdown
+
+
+def _sorted_breakdown_rows(breakdown: object) -> list[tuple[str, dict[str, int]]]:
+    if not isinstance(breakdown, dict):
+        return []
+
+    rows: list[tuple[str, dict[str, int]]] = []
+    for name, stats in breakdown.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(stats, dict):
+            continue
+        rows.append(
+            (
+                name,
+                {
+                    "sessions": stats.get("sessions", 0),
+                    "input_tokens": stats.get("input_tokens", 0),
+                    "output_tokens": stats.get("output_tokens", 0),
+                },
+            )
+        )
+
+    return sorted(rows, key=lambda item: (-item[1]["output_tokens"], item[0]))
+
+
+def _build_breakdown_table(label: str, breakdown: object) -> str:
+    rows = _sorted_breakdown_rows(breakdown)
+    if not rows:
+        return f"| {label} | Sessions | Input tokens | Output tokens |\n|-------|----------|--------------|---------------|\n| None | 0 | 0 | 0 |"
+
+    lines = [
+        f"| {label} | Sessions | Input tokens | Output tokens |",
+        "|-------|----------|--------------|---------------|",
+    ]
+    for name, stats in rows:
+        lines.append(
+            f"| {name} | {stats['sessions']} | {_format_token_count(stats['input_tokens'])} | {_format_token_count(stats['output_tokens'])} |"
+        )
+    return "\n".join(lines)
 
 
 def push_to_huggingface(jsonl_path: Path, repo_id: str, meta: dict) -> None:
@@ -196,12 +308,15 @@ def _build_dataset_card(repo_id: str, meta: dict) -> str:
     models = meta.get("models", {})
     sessions = meta.get("sessions", 0)
     projects = meta.get("projects", [])
+    model_breakdown = meta.get("model_breakdown") or _fallback_breakdown(models, None)
+    project_breakdown = meta.get("project_breakdown") or _fallback_breakdown(None, projects)
     total_input = meta.get("total_input_tokens", 0)
     total_output = meta.get("total_output_tokens", 0)
     timestamp = meta.get("exported_at", "")[:10]
 
-    model_tags = "\n".join(f"  - {m}" for m in sorted(models.keys()) if m != "unknown")
-    model_lines = "\n".join(f"| {m} | {c} |" for m, c in sorted(models.items(), key=lambda x: -x[1]))
+    model_tags = "\n".join(f"  - {m}" for m, _stats in _sorted_breakdown_rows(model_breakdown) if m != "unknown")
+    model_table = _build_breakdown_table("Model", model_breakdown)
+    project_table = _build_breakdown_table("Project", project_breakdown)
 
     return f"""---
 license: mit
@@ -243,9 +358,11 @@ Exported with [DataClaw]({REPO_URL}).
 
 ### Models
 
-| Model | Sessions |
-|-------|----------|
-{model_lines}
+{model_table}
+
+### Projects
+
+{project_table}
 
 ## Schema
 

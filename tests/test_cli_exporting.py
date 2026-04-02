@@ -66,6 +66,33 @@ class TestBuildDatasetCard:
         card = _build_dataset_card("alice/my-dataset", meta)
         assert "alice/my-dataset" in card
 
+    def test_includes_model_and_project_tables_sorted_by_output_tokens(self):
+        meta = {
+            "models": {"m1": 1, "m2": 2},
+            "model_breakdown": {
+                "m1": {"sessions": 1, "input_tokens": 10, "output_tokens": 3},
+                "m2": {"sessions": 2, "input_tokens": 20, "output_tokens": 7},
+            },
+            "sessions": 3,
+            "projects": ["p1", "p2"],
+            "project_breakdown": {
+                "p1": {"sessions": 2, "input_tokens": 15, "output_tokens": 9},
+                "p2": {"sessions": 1, "input_tokens": 15, "output_tokens": 2},
+            },
+            "total_input_tokens": 30,
+            "total_output_tokens": 10,
+            "exported_at": "2025-01-15T10:00:00+00:00",
+        }
+
+        card = _build_dataset_card("user/repo", meta)
+
+        assert "### Models" in card
+        assert "| Model | Sessions | Input tokens | Output tokens |" in card
+        assert card.index("| m2 | 2 | 20 | 7 |") < card.index("| m1 | 1 | 10 | 3 |")
+        assert "### Projects" in card
+        assert "| Project | Sessions | Input tokens | Output tokens |" in card
+        assert card.index("| p1 | 2 | 15 | 9 |") < card.index("| p2 | 1 | 15 | 2 |")
+
 
 class TestExportToJsonl:
     def test_writes_jsonl(self, tmp_path, mock_anonymizer):
@@ -95,6 +122,10 @@ class TestExportToJsonl:
         lines = output.read_text().strip().split("\n")
         assert len(lines) == 1
         assert meta["sessions"] == 1
+        assert meta["model_breakdown"] == {
+            "claude-sonnet-4-20250514": {"sessions": 1, "input_tokens": 100, "output_tokens": 50}
+        }
+        assert meta["project_breakdown"] == {"test": {"sessions": 1, "input_tokens": 100, "output_tokens": 50}}
 
     def test_skips_synthetic_model(self, tmp_path, mock_anonymizer):
         output = tmp_path / "out.jsonl"
@@ -280,6 +311,14 @@ class TestSummarizeExportJsonl:
 
         assert meta["sessions"] == 3
         assert meta["models"] == {"m1": 2, "m2": 1}
+        assert meta["model_breakdown"] == {
+            "m1": {"sessions": 2, "input_tokens": 17, "output_tokens": 4},
+            "m2": {"sessions": 1, "input_tokens": 5, "output_tokens": 2},
+        }
         assert meta["projects"] == ["p1", "p2"]
+        assert meta["project_breakdown"] == {
+            "p1": {"sessions": 2, "input_tokens": 15, "output_tokens": 5},
+            "p2": {"sessions": 1, "input_tokens": 7, "output_tokens": 1},
+        }
         assert meta["total_input_tokens"] == 22
         assert meta["total_output_tokens"] == 6
